@@ -4,7 +4,7 @@ const { GoogleSpreadsheet } = require('google-spreadsheet');
 const fs = require('fs');
 
 // === CONFIGURAR GOOGLE SHEETS ===
-const creds = require('./credentials.json'); // archivo descargado de Google Cloud
+const creds = JSON.parse(process.env.GOOGLE_CREDS); // archivo descargado de Google Cloud
 const SHEET_ID = '1UiMYK8odWxwMTFnJTlpHn5Eg3iVKTqPlWHIu4_8DAgA'; // <-- cambia esto
 const doc = new GoogleSpreadsheet(SHEET_ID);
 
@@ -81,3 +81,4 @@ client.on('message', async msg => {
 });
 
 client.initialize();
+
