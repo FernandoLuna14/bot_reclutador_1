@@ -11,15 +11,32 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => console.log(`🌐 Servidor web escuchando en el puerto ${PORT}`));
 
 // === CONFIGURAR GOOGLE SHEETS ===
-const creds = JSON.parse(process.env.GOOGLE_CREDS); // Credenciales de Google Cloud en variable de entorno
+const fs = require('fs');
+let creds;
+
+// Usa variable de entorno si existe (Render)
+if (process.env.GOOGLE_CREDS) {
+  creds = JSON.parse(process.env.GOOGLE_CREDS);
+} else {
+  // Si no existe, usa el archivo local (modo local)
+  creds = JSON.parse(fs.readFileSync('./credentials.json', 'utf8'));
+}
 const SHEET_ID = '1UiMYK8odWxwMTFnJTlpHn5Eg3iVKTqPlWHIu4_8DAgA'; // <-- usa tu ID real
 const doc = new GoogleSpreadsheet(SHEET_ID);
 
 async function guardarEnSheets(datos) {
   try {
-    await doc.useServiceAccountAuth(creds);
+    // Autenticación
+    await doc.useServiceAccountAuth({
+      client_email: creds.client_email,
+      private_key: creds.private_key.replace(/\\n/g, '\n'),
+    });
+
+    // Cargar hoja
     await doc.loadInfo();
     const sheet = doc.sheetsByIndex[0];
+
+    // Agregar fila
     await sheet.addRow({
       Nombre: datos.nombre,
       Edad: datos.edad,
@@ -28,6 +45,7 @@ async function guardarEnSheets(datos) {
       Vacante: datos.vacante,
       Fecha: new Date().toLocaleString()
     });
+
     console.log('✅ Datos guardados en Google Sheets');
   } catch (err) {
     console.error('❌ Error al guardar en Google Sheets:', err);
@@ -94,11 +112,16 @@ client.on('message', async msg => {
       msg.reply('Por último, ¿a qué *vacante* deseas aplicar? 💼');
       break;
     case 4:
-      user.datos.vacante = msg.body.trim();
-      await guardarEnSheets(user.datos);
-      msg.reply('✅ ¡Gracias! Hemos registrado tu información. Pronto nos pondremos en contacto contigo.');
-      delete usuarios[chatId];
-      break;
+  user.datos.vacante = msg.body.trim();
+  try {
+    await guardarEnSheets(user.datos);
+    await msg.reply('✅ ¡Gracias! Hemos registrado tu información. Pronto nos pondremos en contacto contigo.');
+  } catch (err) {
+    console.error('❌ Error guardando datos finales:', err);
+    await msg.reply('⚠️ Ocurrió un problema al guardar tus datos, pero hemos recibido tu mensaje. Gracias por tu interés.');
+  }
+  delete usuarios[chatId];
+  break;
   }
 });
 
