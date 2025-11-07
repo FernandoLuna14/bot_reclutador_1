@@ -1,4 +1,3 @@
-// Prueba
 // === IMPORTAR DEPENDENCIAS ===
 const express = require('express');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
@@ -8,7 +7,7 @@ const { GoogleSpreadsheet } = require('google-spreadsheet');
 // === CONFIGURAR EXPRESS PARA RENDER Y UPTIMEROBOT ===
 const app = express();
 app.get('/', (req, res) => res.send('🤖 Bot Reclutador activo y funcionando correctamente'));
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000; // ← CAMBIA 3000 por 10000
 app.listen(PORT, '0.0.0.0', () => console.log(`🌐 Servidor web escuchando en el puerto ${PORT}`));
 
 // === CONFIGURAR GOOGLE SHEETS ===
