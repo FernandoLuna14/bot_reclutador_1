@@ -1,3 +1,4 @@
+// Prueba
 // === IMPORTAR DEPENDENCIAS ===
 const express = require('express');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
@@ -352,4 +353,5 @@ process.on('uncaughtException', (error) => {
 // === INICIALIZAR BOT ===
 console.log('🚀 Inicializando bot de WhatsApp...');
 client.initialize();
+
 
