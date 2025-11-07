@@ -48,7 +48,7 @@ async function guardarEnSheets(datos) {
       console.log('📝 Creando nuevos encabezados...');
       await sheet.setHeaderRow([
         'Nombre', 'Direccion', 'CodigoPostal', 'GradoEstudios', 'Vacante',
-        'ContinuaProceso', 'AniosExperiencia', 'LaborandoActual', 'UltimoSalario',
+        'ContinuaProceso', 'AñosExperiencia', 'LaborandoActual', 'UltimoSalario',
         'ExpectativaSalarial', 'CV_Recibido', 'Telefono', 'Fecha'
       ]);
     }
@@ -352,4 +352,5 @@ process.on('uncaughtException', (error) => {
 // === INICIALIZAR BOT ===
 console.log('🚀 Inicializando bot de WhatsApp...');
 client.initialize();
+
 
