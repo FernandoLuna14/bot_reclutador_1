@@ -21,23 +21,31 @@ if (process.env.GOOGLE_CREDS) {
   // Si no existe, usa el archivo local (modo local)
   creds = JSON.parse(fs.readFileSync('./credentials.json', 'utf8'));
 }
-const SHEET_ID = '1UiMYK8odWxwMTFnJTlpHn5Eg3iVKTqPlWHIu4_8DAgA'; // <-- usa tu ID real
+const SHEET_ID = '1UiMYK8odWxwMTFnJTlpHn5Eg3iVKTqPlWHIu4_8DAgA';
 const doc = new GoogleSpreadsheet(SHEET_ID);
 
 async function guardarEnSheets(datos) {
   try {
+    console.log('📊 Intentando guardar en Sheets...');
+    
     // Autenticación
     await doc.useServiceAccountAuth({
       client_email: creds.client_email,
       private_key: creds.private_key.replace(/\\n/g, '\n'),
     });
 
-    // Cargar hoja
     await doc.loadInfo();
-    const sheet = doc.sheetsByIndex[0];
+    console.log('📄 Hoja cargada:', doc.title);
 
-    // Verificar si las columnas existen, si no crearlas
-    if (sheet.headerValues.length === 0) {
+    let sheet = doc.sheetsByIndex[0];
+    console.log('📋 Usando hoja:', sheet.title);
+
+    // Forzar la creación de encabezados si es necesario
+    try {
+      await sheet.loadHeaderRow();
+      console.log('✅ Encabezados existentes cargados');
+    } catch (e) {
+      console.log('📝 Creando nuevos encabezados...');
       await sheet.setHeaderRow([
         'Nombre', 'Direccion', 'CodigoPostal', 'GradoEstudios', 'Vacante',
         'ContinuaProceso', 'AniosExperiencia', 'LaborandoActual', 'UltimoSalario',
@@ -45,32 +53,41 @@ async function guardarEnSheets(datos) {
       ]);
     }
 
-    // Agregar fila
-    await sheet.addRow({
-      Nombre: datos.nombre,
-      Direccion: datos.direccion,
-      CodigoPostal: datos.codigoPostal,
-      GradoEstudios: datos.gradoEstudios,
-      Vacante: datos.vacante,
-      ContinuaProceso: datos.continuaProceso,
-      AniosExperiencia: datos.aniosExperiencia,
-      LaborandoActual: datos.laborandoActual,
-      UltimoSalario: datos.ultimoSalario,
-      ExpectativaSalarial: datos.expectativaSalarial,
+    // Preparar datos para guardar
+    const filaDatos = {
+      Nombre: datos.nombre || 'No proporcionado',
+      Direccion: datos.direccion || 'No proporcionado',
+      CodigoPostal: datos.codigoPostal || 'No proporcionado',
+      GradoEstudios: datos.gradoEstudios || 'No proporcionado',
+      Vacante: datos.vacante || 'No proporcionado',
+      ContinuaProceso: datos.continuaProceso || 'No proporcionado',
+      AniosExperiencia: datos.aniosExperiencia || 'No proporcionado',
+      LaborandoActual: datos.laborandoActual || 'No proporcionado',
+      UltimoSalario: datos.ultimoSalario || 'No proporcionado',
+      ExpectativaSalarial: datos.expectativaSalarial || 'No proporcionado',
       CV_Recibido: datos.cvRecibido || 'No',
-      Telefono: datos.telefono,
+      Telefono: datos.telefono || 'No proporcionado',
       Fecha: new Date().toLocaleString()
-    });
+    };
 
-    console.log('✅ Datos guardados en Google Sheets');
+    console.log('💾 Guardando datos:', filaDatos.Nombre);
+    await sheet.addRow(filaDatos);
+    console.log('✅ Datos guardados exitosamente en Google Sheets');
+    return true;
+
   } catch (err) {
-    console.error('❌ Error al guardar en Google Sheets:', err);
+    console.error('❌ Error detallado al guardar en Google Sheets:', err);
+    console.error('❌ Stack trace:', err.stack);
+    return false;
   }
 }
 
 // === CONFIGURAR WHATSAPP ===
 const client = new Client({
-  authStrategy: new LocalAuth()
+  authStrategy: new LocalAuth(),
+  puppeteer: {
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
+  }
 });
 
 client.on('qr', qr => {
@@ -83,9 +100,12 @@ client.on('ready', () => {
   console.log('✅ Bot conectado correctamente a WhatsApp');
 });
 
-client.on('disconnected', () => {
-  console.log('⚠️ Se perdió la conexión a WhatsApp. Reiniciando...');
-  client.initialize();
+client.on('disconnected', (reason) => {
+  console.log('⚠️ Se perdió la conexión a WhatsApp:', reason);
+  console.log('🔄 Reiniciando en 5 segundos...');
+  setTimeout(() => {
+    client.initialize();
+  }, 5000);
 });
 
 // === LÓGICA DE CONVERSACIÓN ===
@@ -97,7 +117,6 @@ async function enviarImagenVacante(chatId, vacanteNumero) {
     1: 'https://i.ibb.co/yFkPX4Ht/T-cnico-en-operaciones-2.jpg',
     2: 'https://i.ibb.co/RwfWKdc/Ingeniero-de-Calidad.jpg',
     3: 'https://i.ibb.co/rKD351zz/Aux-Mtto-Industrial.jpg'
-    // Nota: Te falta la imagen para la vacante 4 (Seguridad Industrial)
   };
   
   const imagenUrl = imagenes[vacanteNumero];
@@ -121,6 +140,9 @@ async function enviarImagenVacante(chatId, vacanteNumero) {
 }
 
 client.on('message', async msg => {
+  // Ignorar mensajes propios del bot
+  if (msg.fromMe) return;
+
   const chatId = msg.from;
   const texto = msg.body.trim().toLowerCase();
 
@@ -169,7 +191,7 @@ client.on('message', async msg => {
       const mensajeVacantes = `📋 *Muchas gracias. Para continuar podrías marcar el número de la vacante que te interesa?*\n\n` +
                              `1. Técnico en Operaciones\n` +
                              `2. Ingeniero de Calidad\n` +
-                             `3. Auxiliar de Mantenimiento\n` +
+                             `3. Auxiliar de Mantenimiento\n\n` +
                              `*Responde solo con el número (1, 2 o 3)*`;
       
       await msg.reply(mensajeVacantes);
@@ -180,15 +202,18 @@ client.on('message', async msg => {
       const vacantes = {
         '1': 'Técnico en Operaciones',
         '2': 'Ingeniero de Calidad',
-        '3': 'Auxiliar de Mantenimiento',
+        '3': 'Auxiliar de Mantenimiento'
       };
       
       if (vacantes[vacanteNumero]) {
         user.datos.vacante = vacantes[vacanteNumero];
         user.paso++;
         
-        // Enviar imagen de la vacante (opcional)
+        // Enviar imagen de la vacante
         await enviarImagenVacante(chatId, vacanteNumero);
+        
+        // Pequeño delay para que llegue la imagen antes del texto
+        await new Promise(resolve => setTimeout(resolve, 1000));
         
         const beneficios = `✅ *Información de la vacante seleccionada:*\n\n` +
                           `*${user.datos.vacante}*\n\n` +
@@ -204,7 +229,7 @@ client.on('message', async msg => {
         
         await msg.reply(beneficios);
       } else {
-        await msg.reply('❌ Por favor, responde solo con el número de la vacante (1, 2, 3 o 4)');
+        await msg.reply('❌ Por favor, responde solo con el número de la vacante (1, 2 o 3)');
       }
       break;
       
@@ -218,15 +243,18 @@ client.on('message', async msg => {
                        '*Me podrías decir cuántos años de experiencia tienes en el área?*');
       } else if (respuesta === 'no') {
         user.datos.continuaProceso = 'No';
-        user.paso = 99; // Saltar al final
         await msg.reply('👋 *Muchas gracias por tu interés en MetaOil. Te deseamos mucho éxito en tu búsqueda laboral.*');
         
         // Guardar datos y finalizar
         try {
-          await guardarEnSheets(user.datos);
-          delete usuarios[chatId];
+          const guardadoExitoso = await guardarEnSheets(user.datos);
+          if (guardadoExitoso) {
+            console.log('✅ Datos del candidato guardados (proceso no continuado):', user.datos.nombre);
+          }
         } catch (err) {
           console.error('Error guardando datos:', err);
+        } finally {
+          delete usuarios[chatId];
         }
       } else {
         await msg.reply('❌ Por favor, responde *SI* o *NO*');
@@ -260,14 +288,20 @@ client.on('message', async msg => {
     case 10: // Recepción de CV (PDF o cualquier documento)
       // Verificar si es un documento
       if (msg.hasMedia) {
-        const media = await msg.downloadMedia();
-        if (media.mimetype === 'application/pdf') {
-          user.datos.cvRecibido = 'Sí';
-          await msg.reply('✅ *CV recibido correctamente*');
-        } else {
-          user.datos.cvRecibido = 'Documento no PDF';
-          await msg.reply('⚠️ *Se recibió un archivo, pero no es PDF. Por favor envía tu CV en formato PDF.*');
-          break; // No avanzar hasta recibir PDF
+        try {
+          const media = await msg.downloadMedia();
+          if (media.mimetype === 'application/pdf') {
+            user.datos.cvRecibido = 'Sí';
+            await msg.reply('✅ *CV recibido correctamente*');
+          } else {
+            user.datos.cvRecibido = 'Documento no PDF';
+            await msg.reply('⚠️ *Se recibió un archivo, pero no es PDF. Por favor envía tu CV en formato PDF.*');
+            break; // No avanzar hasta recibir PDF
+          }
+        } catch (error) {
+          console.error('Error descargando media:', error);
+          await msg.reply('⚠️ *Error al procesar el archivo. Por favor intenta enviar tu CV nuevamente.*');
+          break;
         }
       } else {
         await msg.reply('📄 *Por favor, envía tu CV en formato PDF*');
@@ -275,7 +309,6 @@ client.on('message', async msg => {
       }
       
       // Mensaje final
-      user.paso++;
       const mensajeFinal = `🙏 *Muchas gracias por tu tiempo.*\n\n` +
                           `Debido a la cantidad de postulaciones que recibimos, nuestro equipo de reclutamiento estará analizando tus datos y uno de ellos te contactará para informarte sobre la decisión, lo que regularmente toma un par de semanas.\n\n` +
                           `*Que tengas un excelente día.* 🌟`;
@@ -284,17 +317,39 @@ client.on('message', async msg => {
       
       // Guardar todos los datos en Google Sheets
       try {
-        await guardarEnSheets(user.datos);
-        console.log('✅ Datos del candidato guardados:', user.datos.nombre);
-        delete usuarios[chatId];
+        const guardadoExitoso = await guardarEnSheets(user.datos);
+        if (guardadoExitoso) {
+          console.log('✅ Datos del candidato guardados exitosamente:', user.datos.nombre);
+          await msg.reply('📝 *Toda tu información ha sido registrada correctamente.*');
+        } else {
+          console.log('⚠️ Datos del candidato procesados pero no guardados en Sheets:', user.datos.nombre);
+          await msg.reply('📝 *Hemos recibido tu información. Gracias por tu interés en MetaOil.*');
+        }
       } catch (err) {
-        console.error('❌ Error guardando datos finales:', err);
-        await msg.reply('⚠️ Ocurrió un problema al guardar tus datos, pero hemos recibido tu información. Gracias por tu interés.');
+        console.error('❌ Error en el proceso final:', err);
+        await msg.reply('📝 *Hemos recibido tu información. Gracias por tu interés en MetaOil.*');
+      } finally {
         delete usuarios[chatId];
       }
+      break;
+      
+    default:
+      // Si llega a un paso no manejado, limpiar el usuario
+      delete usuarios[chatId];
       break;
   }
 });
 
+// Manejar errores no capturados
+process.on('unhandledRejection', (error) => {
+  console.error('❌ Error no manejado:', error);
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('❌ Excepción no capturada:', error);
+});
+
 // === INICIALIZAR BOT ===
+console.log('🚀 Inicializando bot de WhatsApp...');
 client.initialize();
+
