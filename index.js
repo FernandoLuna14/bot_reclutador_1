@@ -61,7 +61,7 @@ async function guardarEnSheets(datos) {
       GradoEstudios: datos.gradoEstudios || 'No proporcionado',
       Vacante: datos.vacante || 'No proporcionado',
       ContinuaProceso: datos.continuaProceso || 'No proporcionado',
-      AniosExperiencia: datos.aniosExperiencia || 'No proporcionado',
+      AñosExperiencia: datos.añosExperiencia || 'No proporcionado',
       LaborandoActual: datos.laborandoActual || 'No proporcionado',
       UltimoSalario: datos.ultimoSalario || 'No proporcionado',
       ExpectativaSalarial: datos.expectativaSalarial || 'No proporcionado',
@@ -262,7 +262,7 @@ client.on('message', async msg => {
       break;
       
     case 6: // Años de experiencia
-      user.datos.aniosExperiencia = msg.body.trim();
+      user.datos.añosExperiencia = msg.body.trim();
       user.paso++;
       await msg.reply('💼 *Actualmente te encuentras laborando?*');
       break;
@@ -352,5 +352,4 @@ process.on('uncaughtException', (error) => {
 // === INICIALIZAR BOT ===
 console.log('🚀 Inicializando bot de WhatsApp...');
 client.initialize();
-
 
