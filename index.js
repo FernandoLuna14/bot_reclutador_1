@@ -1,25 +1,24 @@
-//prueba3
 // === IMPORTAR DEPENDENCIAS ===
 const express = require('express');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const { GoogleSpreadsheet } = require('google-spreadsheet');
 
-// === CONFIGURAR EXPRESS PARA RENDER Y UPTIMEROBOT ===
+// === CONFIGURACIÓN DE EXPRESS PARA RENDER Y UPTIMEBOT ===
 const app = express();
 app.get('/', (req, res) => res.send('🤖 Bot Reclutador activo y funcionando correctamente'));
-const PORT = process.env.PORT || 10000; // ← CAMBIA 3000 por 10000
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => console.log(`🌐 Servidor web escuchando en el puerto ${PORT}`));
 
-// === CONFIGURAR GOOGLE SHEETS ===
+// === configuracion de google sheets ===
 const fs = require('fs');
 let creds;
 
-// Usa variable de entorno si existe (Render)
+// usa variable de entorno si existe (Render)
 if (process.env.GOOGLE_CREDS) {
   creds = JSON.parse(process.env.GOOGLE_CREDS);
 } else {
-  // Si no existe, usa el archivo local (modo local)
+  // si no existe, usar el modo local
   creds = JSON.parse(fs.readFileSync('./credentials.json', 'utf8'));
 }
 const SHEET_ID = '1UiMYK8odWxwMTFnJTlpHn5Eg3iVKTqPlWHIu4_8DAgA';
@@ -29,7 +28,7 @@ async function guardarEnSheets(datos) {
   try {
     console.log('📊 Intentando guardar en Sheets...');
     
-    // Autenticación
+    // autenticación
     await doc.useServiceAccountAuth({
       client_email: creds.client_email,
       private_key: creds.private_key.replace(/\\n/g, '\n'),
@@ -41,7 +40,7 @@ async function guardarEnSheets(datos) {
     let sheet = doc.sheetsByIndex[0];
     console.log('📋 Usando hoja:', sheet.title);
 
-    // Forzar la creación de encabezados si es necesario
+    // forzar la creación de encabezados si es necesario
     try {
       await sheet.loadHeaderRow();
       console.log('✅ Encabezados existentes cargados');
@@ -54,7 +53,7 @@ async function guardarEnSheets(datos) {
       ]);
     }
 
-    // Preparar datos para guardar
+    // preparar datos para guardar
     const filaDatos = {
       Nombre: datos.nombre || 'No proporcionado',
       Direccion: datos.direccion || 'No proporcionado',
@@ -99,6 +98,8 @@ client.on('qr', qr => {
 
 client.on('ready', () => {
   console.log('✅ Bot conectado correctamente a WhatsApp');
+  console.log('🧠 Sistema de gestión de memoria ACTIVADO');
+  console.log(`📊 Configuración: ${CONFIG.MAX_CONVERSACIONES_ACTIVAS} conversaciones activas máximo`);
 });
 
 client.on('disconnected', (reason) => {
@@ -109,10 +110,16 @@ client.on('disconnected', (reason) => {
   }, 5000);
 });
 
-// === LÓGICA DE CONVERSACIÓN ===
-const usuarios = {};
+// === SISTEMA DE GESTIÓN DE MEMORIA ===
+const CONFIG = {
+  MAX_CONVERSACIONES_ACTIVAS: 5,
+  MAX_TIEMPO_INACTIVO: 30 * 60 * 1000 // 30 minutos
+};
 
-// Función para enviar imagen según la vacante
+const conversacionesActivas = new Map(); // Máximo 5 conversaciones en memoria
+const colaEspera = []; // Usuarios esperando turno
+
+// === FUNCIÓN PARA ENVIAR IMAGEN SEGÚN LA VACANTE ===
 async function enviarImagenVacante(chatId, vacanteNumero) {
   const imagenes = {
     1: 'https://i.ibb.co/yFkPX4Ht/T-cnico-en-operaciones-2.jpg',
@@ -140,31 +147,63 @@ async function enviarImagenVacante(chatId, vacanteNumero) {
   }
 }
 
-client.on('message', async msg => {
-  // Ignorar mensajes propios del bot
-  if (msg.fromMe) return;
-
-  const chatId = msg.from;
-  const texto = msg.body.trim().toLowerCase();
-
-  // Iniciar conversación si el mensaje contiene la palabra "interesado"
-  if (!usuarios[chatId] && texto.includes('interesado')) {
-    usuarios[chatId] = { 
-      paso: 0, 
-      datos: {
-        telefono: chatId.replace('@c.us', '')
-      }
-    };
-    
-    const mensajeInicial = `👋 *Gracias por tu interés*, soy el asistente virtual de reclutamiento de *MetaOil*, para poder brindarte el servicio que mereces estaré recopilando algunos datos.\n\n*Me puedes dar tu nombre completo?*`;
-    
-    await msg.reply(mensajeInicial);
-    return;
+// === SISTEMA DE GESTIÓN DE MEMORIA ===
+function gestionarMemoria() {
+  // Si tenemos espacio, sacar usuarios de la cola
+  while (conversacionesActivas.size < CONFIG.MAX_CONVERSACIONES_ACTIVAS && colaEspera.length > 0) {
+    const chatId = colaEspera.shift();
+    iniciarConversacion(chatId);
   }
+  
+  console.log(`🧠 Memoria: ${conversacionesActivas.size}/${CONFIG.MAX_CONVERSACIONES_ACTIVAS} activas, ${colaEspera.length} en espera`);
+}
 
-  if (!usuarios[chatId]) return; // Ignorar mensajes fuera del flujo
+function iniciarConversacion(chatId) {
+  conversacionesActivas.set(chatId, {
+    paso: 0,
+    datos: {
+      telefono: chatId.replace('@c.us', ''),
+      fechaInicio: new Date().toLocaleString()
+    },
+    lastActivity: Date.now()
+  });
+  
+  // Enviar mensaje de bienvenida
+  client.sendMessage(chatId, `👋 *Gracias por tu interés*, soy el asistente virtual de reclutamiento de *MetaOil*, para poder brindarte el servicio que mereces estaré recopilando algunos datos.\n\n*Me puedes dar tu nombre completo?*`);
+  console.log(`🎯 Nueva conversación iniciada: ${chatId}`);
+}
 
-  const user = usuarios[chatId];
+// === FUNCIÓN PARA FINALIZAR Y LIMPIAR MEMORIA ===
+async function finalizarConversacion(chatId, datos, completo = true) {
+  try {
+    // Guardar en Google Sheets
+    const guardadoExitoso = await guardarEnSheets(datos);
+    
+    if (guardadoExitoso) {
+      console.log(`✅ Conversación completada y guardada: ${datos.nombre}`);
+      if (completo) {
+        await client.sendMessage(chatId, '📝 *Toda tu información ha sido registrada correctamente.*');
+      }
+    } else {
+      await client.sendMessage(chatId, '📝 *Hemos recibido tu información. Gracias por tu interés en MetaOil.*');
+    }
+  } catch (err) {
+    console.error('❌ Error guardando datos:', err);
+    await client.sendMessage(chatId, '📝 *Hemos recibido tu información. Gracias por tu interés en MetaOil.*');
+  } finally {
+    // LIMPIAR MEMORIA - esto es clave
+    conversacionesActivas.delete(chatId);
+    console.log(`🧹 Memoria liberada para: ${chatId}`);
+    
+    // Activar siguiente usuario en cola
+    gestionarMemoria();
+  }
+}
+
+// === PROCESAR MENSAJES DE USUARIOS EXISTENTES ===
+async function procesarMensajeExistente(chatId, msg) {
+  const user = conversacionesActivas.get(chatId);
+  user.lastActivity = Date.now();
 
   switch (user.paso) {
     case 0: // Nombre completo
@@ -194,7 +233,6 @@ client.on('message', async msg => {
                              `2. Ingeniero de Calidad\n` +
                              `3. Auxiliar de Mantenimiento\n\n` +
                              `*Responde solo con el número (1, 2 o 3)*`;
-      
       await msg.reply(mensajeVacantes);
       break;
       
@@ -210,10 +248,7 @@ client.on('message', async msg => {
         user.datos.vacante = vacantes[vacanteNumero];
         user.paso++;
         
-        // Enviar imagen de la vacante
         await enviarImagenVacante(chatId, vacanteNumero);
-        
-        // Pequeño delay para que llegue la imagen antes del texto
         await new Promise(resolve => setTimeout(resolve, 1000));
         
         const beneficios = `✅ *Información de la vacante seleccionada:*\n\n` +
@@ -245,18 +280,7 @@ client.on('message', async msg => {
       } else if (respuesta === 'no') {
         user.datos.continuaProceso = 'No';
         await msg.reply('👋 *Muchas gracias por tu interés en MetaOil. Te deseamos mucho éxito en tu búsqueda laboral.*');
-        
-        // Guardar datos y finalizar
-        try {
-          const guardadoExitoso = await guardarEnSheets(user.datos);
-          if (guardadoExitoso) {
-            console.log('✅ Datos del candidato guardados (proceso no continuado):', user.datos.nombre);
-          }
-        } catch (err) {
-          console.error('Error guardando datos:', err);
-        } finally {
-          delete usuarios[chatId];
-        }
+        await finalizarConversacion(chatId, user.datos, false);
       } else {
         await msg.reply('❌ Por favor, responde *SI* o *NO*');
       }
@@ -286,60 +310,89 @@ client.on('message', async msg => {
       await msg.reply('📄 *Por último, me gustaría que me proporcionaras tu CV en formato PDF*');
       break;
       
-    case 10: // Recepción de CV (PDF o cualquier documento)
-      // Verificar si es un documento
+    case 10: // Recepción de CV
       if (msg.hasMedia) {
         try {
           const media = await msg.downloadMedia();
           if (media.mimetype === 'application/pdf') {
             user.datos.cvRecibido = 'Sí';
             await msg.reply('✅ *CV recibido correctamente*');
+            
+            // Mensaje final y guardado
+            const mensajeFinal = `🙏 *Muchas gracias por tu tiempo.*\n\n` +
+                                `Debido a la cantidad de postulaciones que recibimos, nuestro equipo de reclutamiento estará analizando tus datos y uno de ellos te contactará para informarte sobre la decisión, lo que regularmente toma un par de semanas.\n\n` +
+                                `*Que tengas un excelente día.* 🌟`;
+            await msg.reply(mensajeFinal);
+            
+            await finalizarConversacion(chatId, user.datos, true);
           } else {
             user.datos.cvRecibido = 'Documento no PDF';
             await msg.reply('⚠️ *Se recibió un archivo, pero no es PDF. Por favor envía tu CV en formato PDF.*');
-            break; // No avanzar hasta recibir PDF
           }
         } catch (error) {
           console.error('Error descargando media:', error);
           await msg.reply('⚠️ *Error al procesar el archivo. Por favor intenta enviar tu CV nuevamente.*');
-          break;
         }
       } else {
         await msg.reply('📄 *Por favor, envía tu CV en formato PDF*');
-        break; // No avanzar hasta recibir archivo
       }
-      
-      // Mensaje final
-      const mensajeFinal = `🙏 *Muchas gracias por tu tiempo.*\n\n` +
-                          `Debido a la cantidad de postulaciones que recibimos, nuestro equipo de reclutamiento estará analizando tus datos y uno de ellos te contactará para informarte sobre la decisión, lo que regularmente toma un par de semanas.\n\n` +
-                          `*Que tengas un excelente día.* 🌟`;
-      
-      await msg.reply(mensajeFinal);
-      
-      // Guardar todos los datos en Google Sheets
-      try {
-        const guardadoExitoso = await guardarEnSheets(user.datos);
-        if (guardadoExitoso) {
-          console.log('✅ Datos del candidato guardados exitosamente:', user.datos.nombre);
-          await msg.reply('📝 *Toda tu información ha sido registrada correctamente.*');
-        } else {
-          console.log('⚠️ Datos del candidato procesados pero no guardados en Sheets:', user.datos.nombre);
-          await msg.reply('📝 *Hemos recibido tu información. Gracias por tu interés en MetaOil.*');
-        }
-      } catch (err) {
-        console.error('❌ Error en el proceso final:', err);
-        await msg.reply('📝 *Hemos recibido tu información. Gracias por tu interés en MetaOil.*');
-      } finally {
-        delete usuarios[chatId];
-      }
-      break;
-      
-    default:
-      // Si llega a un paso no manejado, limpiar el usuario
-      delete usuarios[chatId];
       break;
   }
+}
+
+// === LÓGICA PRINCIPAL DE MENSAJES ===
+client.on('message', async msg => {
+  if (msg.fromMe) return;
+
+  const chatId = msg.from;
+  const texto = msg.body.trim().toLowerCase();
+
+  // Si el usuario ya está en conversación activa
+  if (conversacionesActivas.has(chatId)) {
+    await procesarMensajeExistente(chatId, msg);
+    return;
+  }
+
+  // Si es nuevo usuario y dice "interesado"
+  if (texto.includes('interesado')) {
+    // Verificar si hay espacio en memoria
+    if (conversacionesActivas.size < CONFIG.MAX_CONVERSACIONES_ACTIVAS) {
+      iniciarConversacion(chatId);
+    } else {
+      // Poner en cola de espera
+      colaEspera.push(chatId);
+      const posicion = colaEspera.length;
+      await msg.reply(`⏳ *Estamos al máximo de capacidad momentánea.*\n\nTu posición en cola: *${posicion}*\nTe atenderemos en cuanto tengamos disponibilidad.`);
+      console.log(`📥 Usuario agregado a cola: ${chatId}, posición: ${posicion}`);
+      gestionarMemoria();
+    }
+  }
 });
+
+// === LIMPIADOR DE CONVERSACIONES INACTIVAS ===
+setInterval(() => {
+  const ahora = Date.now();
+  let limpiados = 0;
+  
+  for (const [chatId, user] of conversacionesActivas.entries()) {
+    if (ahora - user.lastActivity > CONFIG.MAX_TIEMPO_INACTIVO) {
+      console.log(`🕐 Limpiando conversación inactiva: ${chatId}`);
+      conversacionesActivas.delete(chatId);
+      limpiados++;
+      
+      // Notificar al usuario
+      client.sendMessage(chatId, '⏰ *La conversación se ha cerrado por inactividad.*\n\nSi deseas continuar, escribe *"Interesado"* nuevamente.');
+    }
+  }
+  
+  if (limpiados > 0) {
+    console.log(`🧹 Limpiadas ${limpiados} conversaciones inactivas`);
+    gestionarMemoria();
+  }
+}, 60 * 1000); // Revisar cada minuto
+
+// Iniciar gestión de memoria cada 30 segundos
+setInterval(gestionarMemoria, 30 * 1000);
 
 // Manejar errores no capturados
 process.on('unhandledRejection', (error) => {
@@ -352,7 +405,11 @@ process.on('uncaughtException', (error) => {
 
 // === INICIALIZAR BOT ===
 console.log('🚀 Inicializando bot de WhatsApp...');
+console.log('🧠 Sistema de gestión de memoria implementado');
 client.initialize();
+
+// Iniciar gestión de memoria después de 10 segundos
+setTimeout(gestionarMemoria, 10000);
 
 
 
