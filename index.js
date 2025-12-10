@@ -2,23 +2,186 @@
 const express = require('express');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
+const QRCode = require('qrcode'); // NUEVA DEPENDENCIA
 const { GoogleSpreadsheet } = require('google-spreadsheet');
-
-// === CONFIGURACIÓN DE EXPRESS PARA RENDER Y UPTIMEBOT ===
-const app = express();
-app.get('/', (req, res) => res.send('🤖 Bot Reclutador activo y funcionando correctamente'));
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, '0.0.0.0', () => console.log(`🌐 Servidor web escuchando en el puerto ${PORT}`));
-
-// === configuracion de google sheets ===
 const fs = require('fs');
+const path = require('path');
+
+// === CONFIGURACIÓN DE EXPRESS MEJORADA ===
+const app = express();
+
+// Variables globales para el QR
+let qrCodeData = null;
+let qrCodeBase64 = null;
+let botStatus = '⏳ Inicializando bot...';
+
+// Ruta principal - Muestra estado del bot con QR
+app.get('/', (req, res) => {
+  let html = `
+  <!DOCTYPE html>
+  <html>
+  <head>
+    <title>🤖 Bot Reclutador MetaOil</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 20px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        text-align: center;
+      }
+      .container {
+        background: rgba(255, 255, 255, 0.1);
+        backdrop-filter: blur(10px);
+        border-radius: 20px;
+        padding: 30px;
+        margin-top: 20px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+      }
+      .status {
+        font-size: 24px;
+        margin: 20px 0;
+        padding: 15px;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.2);
+      }
+      .qr-container {
+        margin: 30px auto;
+        padding: 20px;
+        background: white;
+        border-radius: 15px;
+        display: inline-block;
+      }
+      .instructions {
+        text-align: left;
+        background: rgba(255, 255, 255, 0.2);
+        padding: 20px;
+        border-radius: 10px;
+        margin-top: 30px;
+      }
+      .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 15px;
+        margin: 25px 0;
+      }
+      .stat-box {
+        background: rgba(255, 255, 255, 0.15);
+        padding: 15px;
+        border-radius: 10px;
+      }
+      .stat-value {
+        font-size: 28px;
+        font-weight: bold;
+        color: #ffd700;
+      }
+      .connected {
+        color: #4CAF50;
+        font-size: 48px;
+        margin: 20px 0;
+      }
+      h1 { 
+        font-size: 36px; 
+        margin-bottom: 10px;
+        text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+      }
+      h2 { 
+        color: #ffd700; 
+        margin-top: 30px;
+      }
+      @media (max-width: 600px) {
+        .container { padding: 15px; }
+        h1 { font-size: 28px; }
+        .status { font-size: 18px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>🤖 Bot Reclutador MetaOil</h1>
+      <div class="status">${botStatus}</div>
+      
+      ${qrCodeBase64 ? `
+      <h2>📱 Escanea este QR con WhatsApp:</h2>
+      <div class="qr-container">
+        <img src="${qrCodeBase64}" alt="QR Code" style="width: 280px; height: 280px;">
+      </div>
+      <div class="instructions">
+        <p><strong>Instrucciones:</strong></p>
+        <ol>
+          <li>Abre WhatsApp en tu teléfono</li>
+          <li>Ve a Configuración → WhatsApp Web/Dispositivos</li>
+          <li>Escanea este código QR</li>
+          <li>Espera la confirmación de conexión</li>
+        </ol>
+      </div>
+      ` : `
+      <div class="connected">✅</div>
+      <h2>¡Bot Conectado Correctamente!</h2>
+      <p>El bot de reclutamiento está funcionando y listo para recibir candidatos.</p>
+      `}
+      
+      <div class="stats-grid">
+        <div class="stat-box">
+          <div class="stat-value">${conversacionesActivas ? conversacionesActivas.size : 0}/5</div>
+          <div>Conversaciones Activas</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-value">${colaEspera ? colaEspera.length : 0}</div>
+          <div>En Cola de Espera</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-value">24/7</div>
+          <div>Disponibilidad</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-value">100%</div>
+          <div>Datos Guardados</div>
+        </div>
+      </div>
+      
+      <div style="margin-top: 30px;">
+        <a href="https://docs.google.com/spreadsheets/d/${SHEET_ID}" 
+           style="background: #ffd700; color: #333; padding: 12px 25px; border-radius: 50px; text-decoration: none; font-weight: bold;"
+           target="_blank">
+          📊 Ver Google Sheets
+        </a>
+      </div>
+    </div>
+    
+    <script>
+      // Auto-refresh si hay QR pendiente
+      if(${qrCodeBase64 ? 'true' : 'false'}) {
+        setTimeout(() => {
+          location.reload();
+        }, 5000);
+      }
+    </script>
+  </body>
+  </html>
+  `;
+  res.send(html);
+});
+
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🌐 Servidor web escuchando en el puerto ${PORT}`);
+  console.log(`📱 Accede a la interfaz web en: http://localhost:${PORT}`);
+  console.log(`🌍 URL pública: https://bot-reclutador-1.onrender.com`);
+});
+
+// === CONFIGURACIÓN DE GOOGLE SHEETS ===
 let creds;
 
-// usa variable de entorno si existe (Render)
+// Usa variable de entorno si existe (Render)
 if (process.env.GOOGLE_CREDS) {
   creds = JSON.parse(process.env.GOOGLE_CREDS);
 } else {
-  // si no existe, usar el modo local
+  // Si no existe, usar el modo local
   creds = JSON.parse(fs.readFileSync('./credentials.json', 'utf8'));
 }
 const SHEET_ID = '1UiMYK8odWxwMTFnJTlpHn5Eg3iVKTqPlWHIu4_8DAgA';
@@ -28,7 +191,7 @@ async function guardarEnSheets(datos) {
   try {
     console.log('📊 Intentando guardar en Sheets...');
     
-    // autenticación
+    // Autenticación
     await doc.useServiceAccountAuth({
       client_email: creds.client_email,
       private_key: creds.private_key.replace(/\\n/g, '\n'),
@@ -40,7 +203,7 @@ async function guardarEnSheets(datos) {
     let sheet = doc.sheetsByIndex[0];
     console.log('📋 Usando hoja:', sheet.title);
 
-    // forzar la creación de encabezados si es necesario
+    // Forzar la creación de encabezados si es necesario
     try {
       await sheet.loadHeaderRow();
       console.log('✅ Encabezados existentes cargados');
@@ -53,7 +216,7 @@ async function guardarEnSheets(datos) {
       ]);
     }
 
-    // preparar datos para guardar
+    // Preparar datos para guardar
     const filaDatos = {
       Nombre: datos.nombre || 'No proporcionado',
       Direccion: datos.direccion || 'No proporcionado',
@@ -82,35 +245,7 @@ async function guardarEnSheets(datos) {
   }
 }
 
-// === CONFIGURAR WHATSAPP ===
-const client = new Client({
-  authStrategy: new LocalAuth(),
-  puppeteer: {
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
-  }
-});
-
-client.on('qr', qr => {
-  console.clear();
-  console.log('📱 Escanea este código QR con el WhatsApp del cliente:');
-  qrcode.generate(qr, { small: true });
-});
-
-client.on('ready', () => {
-  console.log('✅ Bot conectado correctamente a WhatsApp');
-  console.log('🧠 Sistema de gestión de memoria ACTIVADO');
-  console.log(`📊 Configuración: ${CONFIG.MAX_CONVERSACIONES_ACTIVAS} conversaciones activas máximo`);
-});
-
-client.on('disconnected', (reason) => {
-  console.log('⚠️ Se perdió la conexión a WhatsApp:', reason);
-  console.log('🔄 Reiniciando en 5 segundos...');
-  setTimeout(() => {
-    client.initialize();
-  }, 5000);
-});
-
-// === SISTEMA DE GESTIÓN DE MEMORIA ===
+// === GESTIÓN DE MEMORIA PARA NO SATURAR BOT ===
 const CONFIG = {
   MAX_CONVERSACIONES_ACTIVAS: 5,
   MAX_TIEMPO_INACTIVO: 30 * 60 * 1000 // 30 minutos
@@ -119,7 +254,90 @@ const CONFIG = {
 const conversacionesActivas = new Map(); // Máximo 5 conversaciones en memoria
 const colaEspera = []; // Usuarios esperando turno
 
-// === FUNCIÓN PARA ENVIAR IMAGEN SEGÚN LA VACANTE ===
+// === CONFIGURACIÓN DE WHATSAPP ===
+// Limpiar sesiones anteriores para evitar problemas
+console.log('🧹 Limpiando sesiones anteriores de WhatsApp...');
+const sessionPath = path.join(__dirname, '.wwebjs_auth');
+if (fs.existsSync(sessionPath)) {
+  fs.rmSync(sessionPath, { recursive: true, force: true });
+  console.log('✅ Sesiones anteriores limpiadas');
+}
+
+const client = new Client({
+  authStrategy: new LocalAuth({
+    clientId: "metaoil-reclutador-prod"
+  }),
+  puppeteer: {
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--no-first-run',
+      '--no-zygote',
+      '--single-process',
+      '--disable-gpu'
+    ]
+  }
+});
+
+// Evento QR - Mostrar en terminal y en página web
+client.on('qr', async (qr) => {
+  console.clear();
+  console.log('='.repeat(60));
+  console.log('📱 QR GENERADO - ESCANEA DESDE:');
+  console.log(`🌐 https://bot-reclutador-1.onrender.com`);
+  console.log('='.repeat(60));
+  
+  // Mostrar en terminal también
+  qrcode.generate(qr, { small: true });
+  
+  // Guardar QR para la página web
+  qrCodeData = qr;
+  botStatus = '🟡 Esperando escaneo de QR...';
+  
+  try {
+    // Convertir QR a base64 para la página web
+    qrCodeBase64 = await QRCode.toDataURL(qr, {
+      width: 280,
+      margin: 2,
+      color: {
+        dark: '#000000',
+        light: '#FFFFFF'
+      }
+    });
+    console.log('✅ QR convertido para página web');
+  } catch (error) {
+    console.error('❌ Error convirtiendo QR:', error);
+  }
+});
+
+client.on('ready', () => {
+  console.log('='.repeat(60));
+  console.log('✅ BOT CONECTADO CORRECTAMENTE A WHATSAPP');
+  console.log('🧠 Sistema de gestión de memoria: ACTIVADO');
+  console.log(`📊 Configuración: ${CONFIG.MAX_CONVERSACIONES_ACTIVAS} conversaciones activas máximo`);
+  console.log('='.repeat(60));
+  
+  // Actualizar estado para la página web
+  botStatus = '🟢 Bot conectado y funcionando';
+  qrCodeData = null;
+  qrCodeBase64 = null;
+});
+
+client.on('disconnected', (reason) => {
+  console.log('⚠️ Se perdió la conexión a WhatsApp:', reason);
+  console.log('🔄 Reconectando en 10 segundos...');
+  
+  botStatus = '🔴 Desconectado - Reconectando...';
+  
+  setTimeout(() => {
+    console.log('🔄 Intentando reconexión...');
+    client.initialize();
+  }, 10000);
+});
+
+// === FUNCIÓN PARA ENVIAR IMÁGENES DE LAS VACANTES ===
 async function enviarImagenVacante(chatId, vacanteNumero) {
   const imagenes = {
     1: 'https://i.ibb.co/yFkPX4Ht/T-cnico-en-operaciones-2.jpg',
@@ -147,9 +365,9 @@ async function enviarImagenVacante(chatId, vacanteNumero) {
   }
 }
 
-// === SISTEMA DE GESTIÓN DE MEMORIA ===
+// === GESTIÓN DE MEMORIA PARA EVITAR SATURACIÓN ===
 function gestionarMemoria() {
-  // Si tenemos espacio, sacar usuarios de la cola
+  // Si se tiene espacio, sacar usuarios de la cola
   while (conversacionesActivas.size < CONFIG.MAX_CONVERSACIONES_ACTIVAS && colaEspera.length > 0) {
     const chatId = colaEspera.shift();
     iniciarConversacion(chatId);
@@ -173,7 +391,7 @@ function iniciarConversacion(chatId) {
   console.log(`🎯 Nueva conversación iniciada: ${chatId}`);
 }
 
-// === FUNCIÓN PARA FINALIZAR Y LIMPIAR MEMORIA ===
+// === FUNCIÓN PARA TERMINAR Y LIMPIAR MEMORIA ===
 async function finalizarConversacion(chatId, datos, completo = true) {
   try {
     // Guardar en Google Sheets
@@ -191,7 +409,7 @@ async function finalizarConversacion(chatId, datos, completo = true) {
     console.error('❌ Error guardando datos:', err);
     await client.sendMessage(chatId, '📝 *Hemos recibido tu información. Gracias por tu interés en MetaOil.*');
   } finally {
-    // LIMPIAR MEMORIA - esto es clave
+    // LIMPIAR MEMORIA
     conversacionesActivas.delete(chatId);
     console.log(`🧹 Memoria liberada para: ${chatId}`);
     
@@ -203,6 +421,8 @@ async function finalizarConversacion(chatId, datos, completo = true) {
 // === PROCESAR MENSAJES DE USUARIOS EXISTENTES ===
 async function procesarMensajeExistente(chatId, msg) {
   const user = conversacionesActivas.get(chatId);
+  if (!user) return;
+  
   user.lastActivity = Date.now();
 
   switch (user.paso) {
@@ -404,8 +624,12 @@ process.on('uncaughtException', (error) => {
 });
 
 // === INICIALIZAR BOT ===
-console.log('🚀 Inicializando bot de WhatsApp...');
+console.log('🚀 Inicializando Bot de Reclutamiento MetaOil...');
 console.log('🧠 Sistema de gestión de memoria implementado');
+console.log('💾 Sesiones anteriores limpiadas');
+console.log('='.repeat(60));
+
+// Iniciar bot
 client.initialize();
 
 // Iniciar gestión de memoria después de 10 segundos
