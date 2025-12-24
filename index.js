@@ -1,4 +1,4 @@
-// === IMPORTAR DEPENDENCIAS ===
+// === IMPORTAR DEPENDENCIAS === prueba1
 const express = require('express');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
@@ -975,3 +975,4 @@ client.initialize();
 
 // Iniciar gestión de memoria después de 10 segundos
 setTimeout(gestionarMemoria, 10000);
+
