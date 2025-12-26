@@ -1,4 +1,4 @@
-// === IMPORTAR DEPENDENCIAS === prueba1
+// === IMPORTAR DEPENDENCIAS ===
 const express = require('express');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
@@ -10,14 +10,30 @@ const path = require('path');
 // === CONFIGURACIÓN DE EXPRESS MEJORADA ===
 const app = express();
 
-// Variables globales para el QR y estado
+// === SISTEMA ANTI-BUCLE - VARIABLES GLOBALES CRÍTICAS ===
 let qrCodeData = null;
 let qrCodeBase64 = null;
 let botStatus = '⏳ Inicializando bot...';
 let ultimaConexion = Date.now();
 let conexionActiva = false;
 
-// Ruta principal - Muestra estado del bot con QR
+// Variables para controlar el bucle de QR
+let qrTimeout = null;
+let qrAttempts = 0;
+let isInitializing = false;
+let initializationAttempts = 0;
+const MAX_QR_ATTEMPTS = 3;
+const MAX_INITIALIZATION_ATTEMPTS = 5;
+
+// === GESTIÓN DE MEMORIA ===
+const CONFIG = {
+  MAX_CONVERSACIONES_ACTIVAS: 5,
+  MAX_TIEMPO_INACTIVO: 30 * 60 * 1000
+};
+const conversacionesActivas = new Map();
+const colaEspera = [];
+
+// === RUTAS DE EXPRESS ===
 app.get('/', (req, res) => {
   const estadoConexion = conexionActiva ? '🟢 Conectado' : '🔴 Desconectado';
   const tiempoConectado = conexionActiva
@@ -273,6 +289,7 @@ app.get('/', (req, res) => {
           <img src="${qrCodeBase64}" alt="QR Code" class="qr-image">
         </div>
         <p style="margin-top: 15px; color: #666;">El QR expira en 60 segundos</p>
+        ${qrAttempts > 0 ? `<p style="color: #ff6b6b;">Intento ${qrAttempts}/${MAX_QR_ATTEMPTS}</p>` : ''}
       </div>
       
       <div class="instructions">
@@ -426,6 +443,8 @@ app.listen(PORT, '0.0.0.0', () => {
 
 // === CONFIGURACIÓN DE GOOGLE SHEETS ===
 let creds;
+const SHEET_ID = '1UiMYK8odWxwMTFnJTlpHn5Eg3iVKTqPlWHIu4_8DAgA';
+const doc = new GoogleSpreadsheet(SHEET_ID);
 
 // Usa variable de entorno si existe (Render)
 if (process.env.GOOGLE_CREDS) {
@@ -434,8 +453,6 @@ if (process.env.GOOGLE_CREDS) {
   // Si no existe, usar el modo local
   creds = JSON.parse(fs.readFileSync('./credentials.json', 'utf8'));
 }
-const SHEET_ID = '1UiMYK8odWxwMTFnJTlpHn5Eg3iVKTqPlWHIu4_8DAgA';
-const doc = new GoogleSpreadsheet(SHEET_ID);
 
 async function guardarEnSheets(datos) {
   try {
@@ -495,26 +512,72 @@ async function guardarEnSheets(datos) {
   }
 }
 
-// === GESTIÓN DE MEMORIA PARA NO SATURAR BOT ===
-const CONFIG = {
-  MAX_CONVERSACIONES_ACTIVAS: 5,
-  MAX_TIEMPO_INACTIVO: 30 * 60 * 1000 // 30 minutos
-};
+// === FUNCIONES DEL SISTEMA ANTI-BUCLE ===
+async function initializeWhatsAppSafely() {
+  if (isInitializing) {
+    console.log('⚠️ Ya se está inicializando, esperando...');
+    return;
+  }
+  
+  initializationAttempts++;
+  console.log(`🔄 Intento de inicialización ${initializationAttempts}/${MAX_INITIALIZATION_ATTEMPTS}`);
+  
+  if (initializationAttempts > MAX_INITIALIZATION_ATTEMPTS) {
+    console.log('🛑 DEMASIADOS REINICIOS. Deteniendo por 5 minutos...');
+    botStatus = '🛑 Error: Demasiados reinicios. Esperando...';
+    setTimeout(() => {
+      initializationAttempts = 0;
+      botStatus = '🔄 Reintentando conexión...';
+      initializeWhatsAppSafely();
+    }, 5 * 60 * 1000);
+    return;
+  }
+  
+  isInitializing = true;
+  
+  try {
+    await client.initialize();
+  } catch (error) {
+    console.error('❌ Error en initialize():', error.message);
+  } finally {
+    isInitializing = false;
+  }
+}
 
-const conversacionesActivas = new Map(); // Máximo 5 conversaciones en memoria
-const colaEspera = []; // Usuarios esperando turno
+function reiniciarClienteConDelay() {
+  if (qrTimeout) clearTimeout(qrTimeout);
+  qrTimeout = null;
+  
+  console.log('🔄 Programando reinicio controlado en 10 segundos...');
+  botStatus = '🔴 Reconectando...';
+  conexionActiva = false;
+  
+  setTimeout(() => {
+    console.log('🔄 Ejecutando reinicio controlado.');
+    if (client) {
+      client.destroy().then(() => {
+        setTimeout(() => {
+          initializationAttempts = 0;
+          qrAttempts = 0;
+          initializeWhatsAppSafely();
+        }, 2000);
+      }).catch(err => {
+        console.error('Error al destruir cliente:', err);
+        setTimeout(() => initializeWhatsAppSafely(), 5000);
+      });
+    }
+  }, 10000);
+}
 
-// === CONFIGURACIÓN DE WHATSAPP ===
-// Limpiar sesiones anteriores para evitar problemas
+// === CONFIGURACIÓN Y EVENTOS DEL CLIENTE WHATSAPP ===
 console.log('🧹 Verificando sesiones anteriores de WhatsApp...');
 const sessionPath = path.join(__dirname, '.wwebjs_auth');
 if (fs.existsSync(sessionPath)) {
   const stats = fs.statSync(sessionPath);
   const tiempoSesion = Date.now() - stats.mtimeMs;
 
-  // Si la sesión tiene más de 1 día, limpiarla
   if (tiempoSesion > 24 * 60 * 60 * 1000) {
-    console.log('🕒 Sesión antigua detectada, limpiando...');
+    console.log('🕒 Sesión antigua detectada (>1 día), limpiando...');
     fs.rmSync(sessionPath, { recursive: true, force: true });
   } else {
     console.log('✅ Sesión reciente encontrada');
@@ -523,7 +586,8 @@ if (fs.existsSync(sessionPath)) {
 
 const client = new Client({
   authStrategy: new LocalAuth({
-    clientId: "metaoil-reclutador-prod-v2"
+    clientId: "metaoil-reclutador-prod-v2",
+    dataPath: process.env.NODE_ENV === 'production' ? '/tmp/.wwebjs_auth' : undefined
   }),
   puppeteer: {
     args: [
@@ -534,105 +598,70 @@ const client = new Client({
       '--no-first-run',
       '--no-zygote',
       '--single-process',
-      '--disable-gpu',
-      '--disable-background-timer-throttling',
-      '--disable-backgrounding-occluded-windows',
-      '--disable-renderer-backgrounding'
+      '--disable-gpu'
     ]
-  }
+  },
+  restartOnAuthFail: false,
 });
 
-// === SISTEMA DE HEARTBEAT/DETECCIÓN DE CONEXIÓN ===
-async function verificarConexionWhatsApp() {
-  try {
-    // Intentar obtener información básica del cliente
-    const state = await client.getState();
-    conexionActiva = true;
-    ultimaConexion = Date.now();
-    return state === 'CONNECTED';
-  } catch (error) {
-    console.log('⚠️ Error verificando conexión:', error.message);
-    conexionActiva = false;
-    return false;
-  }
-}
-
-// Heartbeat cada 2 minutos
-setInterval(async () => {
-  if (conexionActiva) {
-    const ahora = Date.now();
-    const tiempoInactivo = ahora - ultimaConexion;
-
-    // Si pasaron más de 3 minutos sin actividad
-    if (tiempoInactivo > 3 * 60 * 1000) {
-      console.log('🕒 Sin actividad reciente, verificando conexión...');
-      const conectado = await verificarConexionWhatsApp();
-
-      if (!conectado) {
-        console.log('🔌 Conexión perdida. Limpiando sesión...');
-
-        // Limpiar sesión local
-        const sessionPath = path.join(__dirname, '.wwebjs_auth');
-        if (fs.existsSync(sessionPath)) {
-          fs.rmSync(sessionPath, { recursive: true, force: true });
-          console.log('✅ Sesión local limpiada');
-        }
-
-        // Actualizar estado
-        botStatus = '🔴 Desconectado - Reconectando...';
-        conexionActiva = false;
-
-        // Reiniciar cliente
-        console.log('🔄 Reiniciando cliente WhatsApp...');
-        setTimeout(() => {
-          client.initialize();
-        }, 5000);
-      }
-    }
-  }
-}, 2 * 60 * 1000); // Verificar cada 2 minutos
-
-// Evento QR - Mostrar en terminal y en página web
+// Evento QR - CON SISTEMA ANTI-BUCLE
 client.on('qr', async (qr) => {
+  qrAttempts++;
+  
+  if (qrAttempts > MAX_QR_ATTEMPTS) {
+    console.log(`🛑 Límite de QRs alcanzado (${MAX_QR_ATTEMPTS}). Deteniendo bucle.`);
+    botStatus = '🛑 Error: Muchos QRs. Reiniciando...';
+    reiniciarClienteConDelay();
+    return;
+  }
+  
   console.clear();
   console.log('='.repeat(60));
-  console.log('📱 QR GENERADO - ESCANEA DESDE:');
+  console.log(`📱 QR GENERADO - Intento ${qrAttempts}/${MAX_QR_ATTEMPTS}`);
   console.log(`🌐 https://bot-reclutador-1.onrender.com`);
   console.log('='.repeat(60));
-
-  // Mostrar en terminal también
+  
   qrcode.generate(qr, { small: true });
-
-  // Guardar QR para la página web
+  
   qrCodeData = qr;
-  botStatus = '🟡 Esperando escaneo de QR...';
+  botStatus = `🟡 Esperando QR (${qrAttempts}/${MAX_QR_ATTEMPTS})`;
   conexionActiva = false;
-
+  
   try {
-    // Convertir QR a base64 para la página web
     qrCodeBase64 = await QRCode.toDataURL(qr, {
       width: 280,
       margin: 2,
-      color: {
-        dark: '#000000',
-        light: '#FFFFFF'
-      }
+      color: { dark: '#000000', light: '#FFFFFF' }
     });
     console.log('✅ QR convertido para página web');
   } catch (error) {
     console.error('❌ Error convirtiendo QR:', error);
   }
+  
+  // Timeout para este QR específico
+  if (qrTimeout) clearTimeout(qrTimeout);
+  qrTimeout = setTimeout(() => {
+    if (!conexionActiva) {
+      console.log('⏰ QR no escaneado en 60s. Generando nuevo...');
+      reiniciarClienteConDelay();
+    }
+  }, 60000);
 });
 
 client.on('ready', () => {
   console.log('='.repeat(60));
   console.log('✅ BOT CONECTADO CORRECTAMENTE A WHATSAPP');
   console.log('🧠 Sistema de gestión de memoria: ACTIVADO');
-  console.log('❤️  Sistema de heartbeat: ACTIVADO');
   console.log(`📊 Configuración: ${CONFIG.MAX_CONVERSACIONES_ACTIVAS} conversaciones activas máximo`);
   console.log('='.repeat(60));
 
-  // Actualizar estado de conexión
+  // Resetear todos los contadores de bucle
+  qrAttempts = 0;
+  initializationAttempts = 0;
+  if (qrTimeout) clearTimeout(qrTimeout);
+  qrTimeout = null;
+  
+  // Actualizar estado global
   conexionActiva = true;
   ultimaConexion = Date.now();
   botStatus = '🟢 Bot conectado y funcionando';
@@ -641,12 +670,10 @@ client.on('ready', () => {
 });
 
 client.on('disconnected', (reason) => {
-  console.log('⚠️ Se perdió la conexión a WhatsApp:', reason);
-  console.log('🔄 Reconectando en 10 segundos...');
-
-  botStatus = '🔴 Desconectado - Reconectando...';
+  console.log(`⚠️ Se perdió la conexión a WhatsApp: ${reason}`);
+  botStatus = '🔴 Desconectado - Programando reconexión...';
   conexionActiva = false;
-
+  
   // Limpiar sesión si fue desvinculado manualmente
   if (reason === 'NAVIGATION') {
     console.log('🧹 Limpiando sesión por desvinculación manual...');
@@ -655,12 +682,29 @@ client.on('disconnected', (reason) => {
       fs.rmSync(sessionPath, { recursive: true, force: true });
     }
   }
-
-  setTimeout(() => {
-    console.log('🔄 Intentando reconexión...');
-    client.initialize();
-  }, 10000);
+  
+  reiniciarClienteConDelay();
 });
+
+// === HEARTBEAT MEJORADO ===
+setInterval(async () => {
+  if (conexionActiva) {
+    const tiempoInactivo = Date.now() - ultimaConexion;
+    if (tiempoInactivo > 3 * 60 * 1000) {
+      console.log('🕒 Sin actividad reciente. Verificando estado...');
+      try {
+        const state = await client.getState();
+        if (state !== 'CONNECTED') {
+          console.log('🔌 Estado incorrecto. Forzando reconexión...');
+          reiniciarClienteConDelay();
+        }
+      } catch (error) {
+        console.log('⚠️ Error en heartbeat:', error.message);
+        reiniciarClienteConDelay();
+      }
+    }
+  }
+}, 2 * 60 * 1000);
 
 // === FUNCIÓN PARA ENVIAR IMÁGENES DE LAS VACANTES ===
 async function enviarImagenVacante(chatId, vacanteNumero) {
@@ -691,7 +735,6 @@ async function enviarImagenVacante(chatId, vacanteNumero) {
 
 // === GESTIÓN DE MEMORIA PARA EVITAR SATURACIÓN ===
 function gestionarMemoria() {
-  // Si se tiene espacio, sacar usuarios de la cola
   while (conversacionesActivas.size < CONFIG.MAX_CONVERSACIONES_ACTIVAS && colaEspera.length > 0) {
     const chatId = colaEspera.shift();
     iniciarConversacion(chatId);
@@ -710,7 +753,6 @@ function iniciarConversacion(chatId) {
     lastActivity: Date.now()
   });
 
-  // Enviar mensaje de bienvenida
   client.sendMessage(chatId, `👋 *Gracias por tu interés*, soy el asistente virtual de reclutamiento de *MetaOil*, para poder brindarte el servicio que mereces estaré recopilando algunos datos.\n\n*Me puedes dar tu nombre completo?*`);
   console.log(`🎯 Nueva conversación iniciada: ${chatId}`);
 }
@@ -718,7 +760,6 @@ function iniciarConversacion(chatId) {
 // === FUNCIÓN PARA TERMINAR Y LIMPIAR MEMORIA ===
 async function finalizarConversacion(chatId, datos, completo = true) {
   try {
-    // Guardar en Google Sheets
     const guardadoExitoso = await guardarEnSheets(datos);
 
     if (guardadoExitoso) {
@@ -733,11 +774,8 @@ async function finalizarConversacion(chatId, datos, completo = true) {
     console.error('❌ Error guardando datos:', err);
     await client.sendMessage(chatId, '📝 *Hemos recibido tu información. Gracias por tu interés en MetaOil.*');
   } finally {
-    // LIMPIAR MEMORIA
     conversacionesActivas.delete(chatId);
     console.log(`🧹 Memoria liberada para: ${chatId}`);
-
-    // Activar siguiente usuario en cola
     gestionarMemoria();
   }
 }
@@ -748,8 +786,6 @@ async function procesarMensajeExistente(chatId, msg) {
   if (!user) return;
 
   user.lastActivity = Date.now();
-
-  // Actualizar última conexión del bot
   ultimaConexion = Date.now();
 
   switch (user.paso) {
@@ -865,7 +901,6 @@ async function procesarMensajeExistente(chatId, msg) {
             user.datos.cvRecibido = 'Sí';
             await msg.reply('✅ *CV recibido correctamente*');
 
-            // Mensaje final y guardado
             const mensajeFinal = `🙏 *Muchas gracias por tu tiempo.*\n\n` +
               `Debido a la cantidad de postulaciones que recibimos, nuestro equipo de reclutamiento estará analizando tus datos y uno de ellos te contactará para informarte sobre la decisión, lo que regularmente toma un par de semanas.\n\n` +
               `*Que tengas un excelente día.* 🌟`;
@@ -894,39 +929,29 @@ client.on('message', async msg => {
   const chatId = msg.from;
   const mensajeLimpio = msg.body.trim().toLowerCase();
 
-  // Actualizar última conexión del bot con cada mensaje
   ultimaConexion = Date.now();
 
-  // Si el usuario ya está en conversación activa
   if (conversacionesActivas.has(chatId)) {
     await procesarMensajeExistente(chatId, msg);
     return;
   }
 
-  // Si está en cola de espera
   if (colaEspera.includes(chatId)) {
     await msg.reply(`⏳ *Aún estás en cola de espera.*\n\nTu posición: *${colaEspera.indexOf(chatId) + 1}*\nTe avisaremos cuando sea tu turno.`);
     return;
   }
 
-  // VERIFICACIÓN MEJORADA - Solo "interesado" exacto
   if (mensajeLimpio === 'interesado') {
-    // ✅ Mensaje EXACTAMENTE "interesado" - Iniciar proceso
-
-    // Verificar si hay espacio en memoria
     if (conversacionesActivas.size < CONFIG.MAX_CONVERSACIONES_ACTIVAS) {
       iniciarConversacion(chatId);
     } else {
-      // Poner en cola de espera
       colaEspera.push(chatId);
       const posicion = colaEspera.length;
       await msg.reply(`⏳ *Estamos al máximo de capacidad momentánea.*\n\nTu posición en cola: *${posicion}*\nTe atenderemos en cuanto tengamos disponibilidad.`);
       console.log(`📥 Usuario agregado a cola: ${chatId}, posición: ${posicion}`);
       gestionarMemoria();
     }
-
   }
-  // ❌ Otros mensajes son ignorados (conversaciones normales no activan el bot)
 });
 
 // === LIMPIADOR DE CONVERSACIONES INACTIVAS ===
@@ -940,7 +965,6 @@ setInterval(() => {
       conversacionesActivas.delete(chatId);
       limpiados++;
 
-      // Notificar al usuario
       client.sendMessage(chatId, '⏰ *La conversación se ha cerrado por inactividad.*\n\nSi deseas continuar, escribe *"Interesado"* nuevamente.');
     }
   }
@@ -949,9 +973,8 @@ setInterval(() => {
     console.log(`🧹 Limpiadas ${limpiados} conversaciones inactivas`);
     gestionarMemoria();
   }
-}, 60 * 1000); // Revisar cada minuto
+}, 60 * 1000);
 
-// Iniciar gestión de memoria cada 30 segundos
 setInterval(gestionarMemoria, 30 * 1000);
 
 // Manejar errores no capturados
@@ -963,16 +986,18 @@ process.on('uncaughtException', (error) => {
   console.error('❌ Excepción no capturada:', error);
 });
 
-// === INICIALIZAR BOT ===
+// === INICIALIZACIÓN SEGURA FINAL ===
 console.log('🚀 Inicializando Bot de Reclutamiento MetaOil...');
 console.log('🧠 Sistema de gestión de memoria implementado');
+console.log('🛡️  Sistema anti-bucle de QR implementado');
 console.log('❤️  Sistema de heartbeat/detección implementado');
 console.log('💾 Verificando sesiones anteriores...');
 console.log('='.repeat(60));
 
-// Iniciar bot
-client.initialize();
+// Inicializar después de un pequeño delay
+setTimeout(() => {
+  initializeWhatsAppSafely();
+}, 3000);
 
 // Iniciar gestión de memoria después de 10 segundos
 setTimeout(gestionarMemoria, 10000);
-
