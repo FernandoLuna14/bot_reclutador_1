@@ -11,7 +11,6 @@ const path = require('path');
 const app = express();
 
 // === VARIABLES GLOBALES ===
-let qrCodeData = null;
 let qrCodeBase64 = null;
 let botStatus = '⏳ Inicializando bot...';
 let ultimaConexion = Date.now();
@@ -101,10 +100,7 @@ const client = new Client({
 
 // === INICIALIZACIÓN SEGURA ===
 async function initializeWhatsAppSafe() {
-  if (isInitializing || isClientReady || hasSession) {
-    console.log('⏸️ Inicialización ignorada');
-    return;
-  }
+  if (isInitializing || isClientReady || hasSession) return;
 
   try {
     isInitializing = true;
@@ -119,15 +115,12 @@ async function initializeWhatsAppSafe() {
 
 // === EVENTOS WHATSAPP ===
 client.on('qr', async (qr) => {
-  if (hasSession || isClientReady) {
-    console.log('🚫 QR ignorado (sesión activa)');
-    return;
-  }
+  if (hasSession || isClientReady) return;
 
   console.log('📱 QR generado');
   qrcode.generate(qr, { small: true });
 
-  botStatus = '🟡 Esperando escaneo de QR...';
+  botStatus = '🟡 Escanea el QR desde esta página';
   conexionActiva = false;
 
   qrCodeBase64 = await QRCode.toDataURL(qr);
@@ -149,7 +142,7 @@ client.on('disconnected', (reason) => {
   isClientReady = false;
   hasSession = false;
   conexionActiva = false;
-  botStatus = '🔴 Desconectado';
+  botStatus = '🔴 Bot desconectado';
 
   if (reason === 'NAVIGATION') {
     if (fs.existsSync(SESSION_PATH)) {
@@ -220,15 +213,11 @@ async function procesarMensajeExistente(chatId, msg) {
     case 3:
       user.datos.gradoEstudios = msg.body.trim();
       user.paso++;
-      return msg.reply(
-        '📋 Vacante:\n1️⃣ Técnico\n2️⃣ Ingeniero\n3️⃣ Auxiliar'
-      );
+      return msg.reply('📋 Vacante:\n1️⃣ Técnico\n2️⃣ Ingeniero\n3️⃣ Auxiliar');
 
     case 4:
       const map = { '1':'Técnico','2':'Ingeniero','3':'Auxiliar' };
-      if (!map[msg.body.trim()]) {
-        return msg.reply('❌ Responde 1, 2 o 3');
-      }
+      if (!map[msg.body.trim()]) return msg.reply('❌ Responde 1, 2 o 3');
       user.datos.vacante = map[msg.body.trim()];
       user.paso++;
       await enviarImagenVacante(chatId, msg.body.trim());
@@ -260,17 +249,12 @@ client.on('message', async msg => {
 
   const chatId = msg.from;
   const texto = msg.body.trim().toLowerCase();
-
   ultimaConexion = Date.now();
 
-  if (conversacionesActivas.has(chatId)) {
-    return procesarMensajeExistente(chatId, msg);
-  }
-
+  if (conversacionesActivas.has(chatId)) return procesarMensajeExistente(chatId, msg);
   if (colaEspera.includes(chatId)) {
     return msg.reply(`⏳ Sigues en espera. Posición: ${colaEspera.indexOf(chatId)+1}`);
   }
-
   if (texto === 'interesado') {
     if (conversacionesActivas.size < CONFIG.MAX_CONVERSACIONES_ACTIVAS) {
       iniciarConversacion(chatId);
@@ -283,15 +267,12 @@ client.on('message', async msg => {
 
 // === GESTIÓN MEMORIA ===
 function gestionarMemoria() {
-  while (
-    conversacionesActivas.size < CONFIG.MAX_CONVERSACIONES_ACTIVAS &&
-    colaEspera.length > 0
-  ) {
+  while (conversacionesActivas.size < CONFIG.MAX_CONVERSACIONES_ACTIVAS && colaEspera.length) {
     iniciarConversacion(colaEspera.shift());
   }
 }
 
-// === LIMPIADOR DE INACTIVOS ===
+// === LIMPIADOR INACTIVOS ===
 setInterval(() => {
   const ahora = Date.now();
   for (const [chatId, u] of conversacionesActivas) {
@@ -305,9 +286,39 @@ setInterval(() => {
   gestionarMemoria();
 }, 60000);
 
-// === SERVIDOR WEB ===
+// === SERVIDOR WEB (QR EN RENDER) ===
 app.get('/', (req, res) => {
-  res.send(`<h1>${botStatus}</h1>${qrCodeBase64 ? `<img src="${qrCodeBase64}" width="280">` : ''}`);
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="es">
+    <head>
+      <meta charset="UTF-8">
+      <title>WhatsApp Bot MetaOil</title>
+      <meta http-equiv="refresh" content="4">
+      <style>
+        body {
+          font-family: Arial;
+          background: #0f172a;
+          color: #e5e7eb;
+          text-align: center;
+          padding-top: 40px;
+        }
+        img {
+          background: white;
+          padding: 10px;
+          border-radius: 12px;
+          margin-top: 20px;
+        }
+      </style>
+    </head>
+    <body>
+      <h1>🤖 WhatsApp Bot MetaOil</h1>
+      <h2>${botStatus}</h2>
+      ${qrCodeBase64 ? `<img src="${qrCodeBase64}" width="280">` : '<p>QR no requerido</p>'}
+      <p>La página se actualiza automáticamente</p>
+    </body>
+    </html>
+  `);
 });
 
 const PORT = process.env.PORT || 10000;
@@ -315,6 +326,5 @@ app.listen(PORT, () => console.log(`🌍 Servidor en puerto ${PORT}`));
 
 // === INICIO ===
 setTimeout(initializeWhatsAppSafe, 3000);
-
 process.on('unhandledRejection', console.error);
 process.on('uncaughtException', console.error);
